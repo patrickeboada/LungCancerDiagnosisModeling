@@ -1510,8 +1510,8 @@ Test Train Split imbalanced
 
 
 intrain <- createDataPartition(y = data7$hospital_expire_flag, p= 0.7, list = FALSE)
-training <- data6[intrain,]
-testing <- data6[-intrain,]
+training <- data7[intrain,]
+testing <- data7[-intrain,]
 dim(training); dim(testing)
 head(training)
 head(testing)
