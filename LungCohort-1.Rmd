@@ -1,0 +1,2080 @@
+---
+title: "Lung Cancer Cohort Analysis"
+author: "Patrick Boada"
+date: "5/13/2020"
+output: 
+    html_document:
+    theme: spacelab
+    highlight: tango
+    font-size: 12pt
+    font-family: Helevetica;
+---
+
+The objective of the study is to find best modeling methods to predict death of a patient diagnosed with lung cancer from the MIMIC3 database.
+
+The EDA will cover examination of 17 variables: patient age, ethnicity, gender, length of stay, has used chemotherapy, has used radiotherapy, death at hospital, insurance, bicarbonate minimum value, bicarbonate maximum value, platelet count minimum value, white blood cell minimum value, 
+white blood cell maximum value, red blood cell minimum value, red blood cell maximum value, bloodpH minimum value, and BloodpH maximum value. 
+
+Death at hospital (hospital_expire_flag) will act as the primary response variable for all modeling.
+
+The data was originally drawn from at postgresql query to the Mimic3 database. 
+
+The icd9_list column was not useful in modeling differences between groups, so it was dropped from EDA and modeling. 
+
+The laboratory measurement data was restructured from original loinc codes for each measurement. Therefore the data came originally with dimensions of 8587 rows and 14 columns. However rows were replicated per patient due to multiple laboratory tests within the original record. After restructuring the data to represent each patient once, with multiple laboratory measurements, the dimensions shifted to 1631 rows and 18 columns. Once the patient laboratory measurement data was restructured all instances of messages (strings) were converted to Nas. Furthermore deviating value expressions (e.g. <5) were removed and replaced with a value that matched the expression removed (e.g. 4), rather than the median.
+
+EDA of loinc_code laboratory measurements demonstrates that only a majority of the cohort had measurements for four of the six measurements queried. In this instance Oxygen Saturation (loinc_ code: 20564-1) was dropped from the dataframe due to missing 54% of the data. Furthermore, blood pH values (loinc code: 11558-4) was missing 20% of the instances for patients. In this case, values were imputed with the median value of the total population. All NAs derived from converting written messages into the patients laboratory measurements were imputed with median values as well. 
+
+Racial and ethnic designations were very specific and did not match typical raceOMB constraints. Therefore ethnic groups were generalized into 6 groups to represent the population (African American, Asian, Hispanic, Other, Unknown, White) from the original 26 variations.
+
+If a patient is 89 years old at time of entry to the hospital, the age of the patient is deidenfied by adding 300 years to the time of entry. Age of 300 year old deidentified patients were reassigned to the age of 89, given that median values for age were lower than 89.
+
+Through the use of spearman correlation a strong correlation between PlateletCount_min_value and Bicarbonate_min_value (~.9) persisted. To remedy the strong correlation PlateletCount_min_value was removed as a predictor variable.
+
+Furthermore death in the patient population only constituted 31%. Since only 389 patients of the 1631 were represented, upsampling measures with SMOTE were used to balance the groups. Models were first run with the upsampled dataset and then compared to the unaltered dataset. All models of the upsampled dataset had higher AUC values ranging from 0.01 to .05.
+
+Modeling variations included SVM (Linear, RBF, and Polynomial), elastic net, logistic regression, decision tree, and random forest. The highest AUC value was from the random forest model (91.3%), with SVM RBF as second place (85.6%).
+
+Libraries:
+```{r}
+
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(ggplot2)
+
+library(glmnet)
+
+library(pscl)
+library(VIF)
+library(car)
+library(carData)
+
+library(caret)
+library(rpart.plot)
+library(pROC)
+library(randomForest)
+
+library(Hmisc)
+library(DescTools)
+library(DMwR)
+
+```
+
+
+
+
+load data
+```{r}
+
+df <- read.csv('Lung_Resp_Cancer_Cohort_V2.csv', header = T, stringsAsFactors = T, sep = ',')
+data = df
+#view(df)
+
+```
+
+
+Preprocessing and Data Cleaning 
+```{r}
+head(data)
+```
+
+
+Find Nas
+```{r}
+any(is.na(data))
+summary(data)
+```
+
+
+
+
+Ethnicity Reclassification
+```{r}
+
+#unique(data$ethnicity)
+data$ethnicity <- as.character(data$ethnicity)
+
+#White / European American
+data$ethnicity <- ifelse(data$ethnicity %like% "WHITE - BRAZILIAN" == T, 'White', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "WHITE - EASTERN EUROPEAN" == T, 'White', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "WHITE - OTHER EUROPEAN" == T, 'White', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "WHITE - RUSSIAN" == T, 'White', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "WHITE" == T, 'White', data$ethnicity)
+
+#Black / African American
+data$ethnicity <- ifelse(data$ethnicity %like% "BLACK/AFRICAN AMERICAN" == T, 'African American', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "BLACK/CAPE VERDEAN" == T, 'African American', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "BLACK/HAITIAN" == T, 'African American', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "Black" == T, 'African American', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "BLACK/AFRICAN" == T, 'African American', data$ethnicity)
+
+
+# Asian
+data$ethnicity <- ifelse(data$ethnicity %like% "ASIAN" == T, 'Asian', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "ASIAN - CAMBODIAN" == T, 'Asian', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "ASIAN - CHINESE" == T, 'Asian', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "ASIAN - FILIPINO" == T, 'Asian', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "ASIAN - KOREAN" == T, 'Asian', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "ASIAN - VIETNAMESE" == T, 'Asian', data$ethnicity)
+
+#Hispanic
+data$ethnicity <- ifelse(data$ethnicity %like% "HISPANIC OR LATINO" == T, 'Hispanic', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "HISPANIC/LATINO - PUERTO RICAN" == T, 'Hispanic', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "HISPANIC/LATINO - GUATEMALAN" == T, 'Hispanic', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "HISPANIC/LATINO - DOMINICAN" == T, 'Hispanic', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "HISPANIC/LATINO - CENTRAL AMERICAN", 'Hispanic', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "HISPANIC/LATINO - CUBAN" == T, 'Hispanic', data$ethnicity)
+
+
+#Unknown
+data$ethnicity <- ifelse(data$ethnicity %like% "UNKNOWN/NOT SPECIFIED" == T, 'Unknown', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "PATIENT DECLINED TO ANSWER" == T, 'Unknown', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "UNABLE TO OBTAIN" == T, 'Unknown', data$ethnicity)
+
+#Other
+data$ethnicity <- ifelse(data$ethnicity %like% "OTHER" == T, 'Other', data$ethnicity)
+data$ethnicity <- ifelse(data$ethnicity %like% "MULTI RACE ETHNICITY" == T, 'Other', data$ethnicity)
+
+data$ethnicity <- factor(data$ethnicity)
+any(is.na(data$ethnicity))
+
+#unique(data$ethnicity)
+#view(data)
+```
+
+
+
+Adjusting patient_age for deidentified patient's age
+```{r}
+
+data$patient_age <- ifelse(data$patient_age >= 300, 89, data$patient_age)
+any(is.na(data$patient_age))
+
+```
+
+
+
+loinc_code reclassification:
+For modeling purposes subject_id, icd9_list, & has_cancer have been dropped at this iteration
+```{r}
+
+
+lo_19638 <- subset(data, loinc_code == '1963-8', select = c(subject_id, patient_age, ethnicity, gender, hadm_id_los, has_chemo, has_radio, hospital_expire_flag, insurance, min_value, max_value))
+#lo_19638 %>% rename( min_value_19638 = min_value, max_value_19638 = max_value)
+colnames(lo_19638)[colnames(lo_19638) == 'min_value'] <- 'Bicarbonate_min_value'
+colnames(lo_19638)[colnames(lo_19638) == 'max_value'] <- 'Bicarbonate_max_value'
+
+lo_7773 <- subset(data, loinc_code == '777-3', select = c(subject_id, min_value, max_value))
+#lo_7773  %>% rename( min_value_7773 = min_value, max_value_7773 = max_value)
+colnames(lo_7773)[colnames(lo_7773) == 'min_value'] <- 'PlateletCount_min_value'
+colnames(lo_7773)[colnames(lo_7773) == 'max_value'] <- 'PlateletCount_max_value'
+
+lo_8045 <- subset(data, loinc_code == '804-5', select = c(subject_id, min_value, max_value))
+colnames(lo_8045)[colnames(lo_8045) == 'min_value'] <- 'WhiteBloodCell_min_value'
+colnames(lo_8045)[colnames(lo_8045) == 'max_value'] <- 'WhiteBloodCell_max_value'
+
+lo_7898 <- subset(data, loinc_code == '789-8', select = c(subject_id, min_value, max_value))
+#lo_7898  %>% rename( min_value_7898 = min_value, max_value_7898 = max_value)
+colnames(lo_7898)[colnames(lo_7898) == 'min_value'] <- 'RedBloodCell_min_value'
+colnames(lo_7898)[colnames(lo_7898) == 'max_value'] <- 'RedBloodCell_max_value'
+
+lo_115584 <- subset(data, loinc_code == '11558-4', select = c(subject_id, min_value, max_value))
+colnames(lo_115584)[colnames(lo_115584) == 'min_value'] <- 'BloodpH_min_value'
+colnames(lo_115584)[colnames(lo_115584) == 'max_value'] <- 'BloodpH_max_value'
+
+#lo_205641 <- subset(data, loinc_code == '20564-1', select = c(subject_id, min_value, max_value))
+#colnames(lo_205641)[colnames(lo_205641) == 'min_value'] <- 'Oxygen_min_value'
+#colnames(lo_205641)[colnames(lo_205641) == 'max_value'] <- 'Oxygen_max_value'
+
+
+
+form <- left_join(lo_19638, lo_7773, by = 'subject_id')
+
+form1 <- left_join(form, lo_8045, by = 'subject_id')
+
+form2 <- left_join(form1, lo_7898, by = 'subject_id')
+
+data2 <- left_join(form2,lo_115584, by = 'subject_id')
+
+summary(data2)
+
+```
+
+
+Clean Strings out:
+Some erroneous messages are stored as values in the laboratory measurements.
+```{r}
+data2$BloodpH_max_value <- as.numeric(gsub("[A-Z]+", NaN, data2$BloodpH_max_value))
+data2$BloodpH_min_value <- as.numeric(gsub("[A-Z]+", NaN, data2$BloodpH_min_value))
+data2$RedBloodCell_max_value <- as.numeric(gsub("[A-Z]+", NaN, data2$RedBloodCell_max_value))
+data2$RedBloodCell_min_value <- as.numeric(gsub("[A-Z]+", NaN, data2$RedBloodCell_min_value))
+data2$WhiteBloodCell_min_value <- as.numeric(gsub("[A-Z]+", NaN, data2$WhiteBloodCell_min_value))
+data2$WhiteBloodCell_max_value <- as.numeric(gsub("[A-Z]+", NaN, data2$WhiteBloodCell_max_value))
+data2$PlateletCount_min_value <- as.numeric(gsub("[A-Z]+", NaN, data2$PlateletCount_min_value))
+#data2$PlateletCount_min_value <- as.numeric(gsub("[<]+", NaN, data2$PlateletCount_min_value))
+data2$PlateletCount_min_value <- ifelse(data2$Bicarbonate_min_value == '<5', as.numeric(4), data2$Bicarbonate_min_value)
+data2$PlateletCount_max_value <- as.numeric(gsub("[A-Z]+", NaN, data2$PlateletCount_max_value))
+data2$Bicarbonate_min_value <- as.numeric(gsub("[A-Z]+", NaN, data2$Bicarbonate_min_value))
+#data2$Bicarbonate_min_value <- as.numeric(gsub("[>]+", NaN, data2$Bicarbonate_min_value))
+data2$Bicarbonate_min_value <- ifelse(data2$Bicarbonate_min_value == '>50', as.numeric(51), data2$Bicarbonate_min_value)
+data2$Bicarbonate_max_value <- as.numeric(gsub("[A-Z]+", NaN, data2$Bicarbonate_max_value))
+write.csv(data2,"test1.csv", row.names = FALSE)
+
+
+
+```
+
+
+
+
+
+
+
+
+
+Prepare final dataset for modeling
+```{r}
+data4 <- subset(data2, select = -c(subject_id))
+```
+
+
+```{r}
+
+summary(data4)
+
+```
+
+Column Variable Coercion
+```{r}
+
+
+data4$patient_age <- as.numeric(data4$patient_age)
+data4$hadm_id_los <- as.numeric(data4$hadm_id_los)
+
+
+data4$ethnicity <- factor(data4$ethnicity)
+data4$gender <- factor(data4$gender)
+data4$has_chemo <- factor(data4$has_chemo)
+data4$has_radio <- factor(data4$has_radio)
+data4$hospital_expire_flag <- factor(data4$hospital_expire_flag)
+data4$insurance <- factor(data4$insurance)
+
+
+
+data4$Bicarbonate_min_value <- as.numeric(data4$Bicarbonate_min_value)
+data4$Bicarbonate_max_value <- as.numeric(data4$Bicarbonate_max_value)
+data4$PlateletCount_min_value <- as.numeric(data4$PlateletCount_min_value)
+data4$PlateletCount_max_value <- as.numeric(data4$PlateletCount_max_value)
+data4$RedBloodCell_min_value <- as.numeric(data4$RedBloodCell_min_value)
+data4$RedBloodCell_max_value <- as.numeric(data4$RedBloodCell_max_value)
+data4$WhiteBloodCell_min_value <- as.numeric(data4$WhiteBloodCell_min_value)
+data4$WhiteBloodCell_max_value <- as.numeric(data4$WhiteBloodCell_max_value)
+data4$BloodpH_min_value <- as.numeric(data4$BloodpH_min_value)
+data4$BloodpH_max_value <- as.numeric(data4$BloodpH_max_value)
+
+
+
+any(is.na(data4))
+#view(data4)
+#write.csv(data4,"clean.csv", row.names = FALSE)
+summary(data4)
+```
+data4 is prepped for modeling
+
+
+
+
+
+
+Numeric DataFrame for Correlation 
+```{r}
+data5 <- data4
+
+data5$patient_age <- as.numeric(data5$patient_age)
+data5$hadm_id_los <- as.numeric(data5$hadm_id_los)
+
+data5$hadm_id_los <- as.numeric(data5$hadm_id_los)
+
+data5$ethnicity <- as.numeric(data5$ethnicity)
+data5$gender <- as.numeric(data5$gender)
+data5$has_chemo <- as.numeric(data5$has_chemo)
+data5$has_radio <- as.numeric(data5$has_radio)
+data5$hospital_expire_flag <- as.numeric(data5$hospital_expire_flag)
+data5$insurance <- as.numeric(data5$insurance)
+
+
+
+data5$Bicarbonate_min_value <- as.numeric(data5$Bicarbonate_min_value)
+data5$Bicarbonate_max_value <- as.numeric(data5$Bicarbonate_max_value)
+data5$PlateletCount_min_value <- as.numeric(data5$PlateletCount_min_value)
+data5$PlateletCount_max_value <- as.numeric(data5$PlateletCount_max_value)
+data5$RedBloodCell_min_value <- as.numeric(data5$RedBloodCell_min_value)
+data5$RedBloodCell_max_value <- as.numeric(data5$RedBloodCell_max_value)
+data5$WhiteBloodCell_min_value <- as.numeric(data5$WhiteBloodCell_min_value)
+data5$WhiteBloodCell_max_value <- as.numeric(data5$WhiteBloodCell_max_value)
+data5$BloodpH_min_value <- as.numeric(data5$BloodpH_min_value)
+data5$BloodpH_max_value <- as.numeric(data5$BloodpH_max_value)
+
+
+
+```
+
+
+
+
+Spearman Correation
+```{r}
+cor(data5, use = 'pairwise.complete.obs', method= 'spearman')
+```
+PlateletCount_min_value & Bicarbonate_min_value have a strong correlation 
+
+
+
+```{r}
+data5 <- subset(data4, select = -c(PlateletCount_min_value))
+
+data5$patient_age <- as.numeric(data5$patient_age)
+data5$hadm_id_los <- as.numeric(data5$hadm_id_los)
+
+data5$hadm_id_los <- as.numeric(data5$hadm_id_los)
+
+data5$ethnicity <- as.numeric(data5$ethnicity)
+data5$gender <- as.numeric(data5$gender)
+data5$has_chemo <- as.numeric(data5$has_chemo)
+data5$has_radio <- as.numeric(data5$has_radio)
+data5$hospital_expire_flag <- as.numeric(data5$hospital_expire_flag)
+data5$insurance <- as.numeric(data5$insurance)
+
+
+
+data5$Bicarbonate_min_value <- as.numeric(data5$Bicarbonate_min_value)
+data5$Bicarbonate_max_value <- as.numeric(data5$Bicarbonate_max_value)
+#data5$PlateletCount_min_value <- as.numeric(data5$PlateletCount_min_value)
+data5$PlateletCount_max_value <- as.numeric(data5$PlateletCount_max_value)
+data5$RedBloodCell_min_value <- as.numeric(data5$RedBloodCell_min_value)
+data5$RedBloodCell_max_value <- as.numeric(data5$RedBloodCell_max_value)
+data5$WhiteBloodCell_min_value <- as.numeric(data5$WhiteBloodCell_min_value)
+data5$WhiteBloodCell_max_value <- as.numeric(data5$WhiteBloodCell_max_value)
+data5$BloodpH_min_value <- as.numeric(data5$BloodpH_min_value)
+data5$BloodpH_max_value <- as.numeric(data5$BloodpH_max_value)
+
+```
+
+
+
+```{r}
+cor(data5, use = 'pairwise.complete.obs', method= 'spearman')
+```
+
+
+
+
+EDA & Data Cleaning
+
+
+mode function
+```{r}
+getmode <- function(v) {
+  uni<-unique(v)
+  uni[which.max(tabulate(match(v,uni)))]
+}
+```
+
+
+
+
+
+
+
+loinc_code EDA
+```{r}
+
+cat('Summary of loinc_code:')
+cat('\n')
+summary(data$loinc_code)
+cat('\n')
+cat('Mode of loinc_code: ', getmode(data$loinc_code))
+cat('\n')
+cat('Observation and Factor Count')
+cat('\n')
+summary(table(data$loinc_code))
+cat('\n')
+cat('Na count', sum(is.na(data$loinc_code)))
+cat('\n')
+
+GGloinc_code <- ggplot(data=data, mapping=aes(x=loinc_code)) + geom_bar(color ='azure4', fill = 'royalblue', bins = 45, na.rm = TRUE) + ggtitle("Histogram for loinc_code") + labs(x='loinc_code', y='Frequency') + theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGloinc_code)
+```
+#lowest occurrence for 20564-1
+from the histogram you can see that we can only measure by 1963-8, 777-3, 804-5
+missing data from other columns would either need to be imputed or dropped.
+20564-1 can be dropped because it is associated with oxygen saturation and may confound Red blood cell count if imputed.
+11558-4 may be imputed as it does not have another confounding variable present and missing data is less than 50%.
+
+
+
+
+Blood pH
+```{r}
+
+GGpHMAX<- ggplot(data=data4, mapping=aes(x=BloodpH_max_value)) + geom_histogram(color ='azure4', fill = 'royalblue', bins = 45, na.rm = TRUE) + ggtitle("BloodpH_max_value") + labs(x='pH', y='Frequency') + theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGpHMAX)
+
+
+
+GGpHMIN<- ggplot(data=data4, mapping=aes(x=BloodpH_min_value)) + geom_histogram(color ='azure4', fill = 'royalblue', bins = 45, na.rm = TRUE) + ggtitle("BloodpH_min_value") + labs(x='pH', y='Frequency') + theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGpHMIN)
+
+```
+
+
+
+
+
+
+RedBloodCell_max_value
+```{r}
+
+GGRBCMAX<- ggplot(data=data4, mapping=aes(x=RedBloodCell_max_value)) + geom_histogram(color ='azure4', fill = 'royalblue', bins = 45, na.rm = TRUE) + ggtitle("RedBloodCell_max_value") + labs(x='RBC count', y='Frequency') + theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGRBCMAX)
+
+
+
+GGRBCMIN<- ggplot(data=data4, mapping=aes(x=RedBloodCell_min_value)) + geom_histogram(color ='azure4', fill = 'royalblue', bins = 45, na.rm = TRUE) + ggtitle("RedBloodCell_min_value") + labs(x='RBC count', y='Frequency') + theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGRBCMIN)
+
+```
+
+
+
+WhiteBloodCell
+```{r}
+
+GGWBCMAX<- ggplot(data=data4, mapping=aes(x=WhiteBloodCell_max_value)) + geom_histogram(color ='azure4', fill = 'royalblue', bins = 45, na.rm = TRUE) + ggtitle("WhiteBloodCell_max_value") + labs(x='WBC  count', y='Frequency') + theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGWBCMAX)
+
+
+
+GGWBCMIN<- ggplot(data=data4, mapping=aes(x=WhiteBloodCell_min_value)) + geom_histogram(color ='azure4', fill = 'royalblue', bins = 45, na.rm = TRUE) + ggtitle("WhiteBloodCell_min_value") + labs(x='WBC count', y='Frequency') + theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGWBCMIN)
+
+```
+
+
+Bicarbonate_max_value 
+```{r}
+
+GGbiMAX<- ggplot(data=data4, mapping=aes(x=Bicarbonate_max_value)) + geom_histogram(color ='azure4', fill = 'royalblue', bins = 45, na.rm = TRUE) + ggtitle("Bicarbonate_max_value") + labs(x='Bicarbonate', y='Frequency') + theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGbiMAX)
+
+
+
+GGbiMIN<- ggplot(data=data4, mapping=aes(x=Bicarbonate_min_value)) + geom_histogram(color ='azure4', fill = 'royalblue', bins = 45, na.rm = TRUE) + ggtitle("Bicarbonate_min_value") + labs(x='Bicarbonate', y='Frequency') + theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGbiMIN)
+
+```
+
+
+
+
+
+
+```{r}
+GGPLTMAX<- ggplot(data=data4, mapping=aes(x=PlateletCount_min_value)) + geom_histogram(color ='azure4', fill = 'royalblue', bins = 45, na.rm = TRUE) + ggtitle("PlateletCount_min_value") + labs(x='Platlet Count', y='Frequency') + theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGPLTMAX)
+
+
+
+GGPLTMIN<- ggplot(data=data4, mapping=aes(x=PlateletCount_max_value)) + geom_histogram(color ='azure4', fill = 'royalblue', bins = 45, na.rm = TRUE) + ggtitle("PlateletCount_max_value") + labs(x='Platlet Count', y='Frequency') + theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGPLTMIN)
+
+
+
+```
+
+
+
+
+
+patient_age EDA
+```{r}
+
+cat('Summary of patient_age:')
+cat('\n')
+
+summary(data2$patient_age)
+cat('Standard Deviation of patient_age: ',sd(data2$patient_age))
+cat('\n')
+cat('Variance of patient_age: ', var(data2$patient_age))
+cat('\n')
+cat('Mode of patient_age: ', getmode(data2$patient_age))
+cat('\n')
+cat('Observation and Factor Count')
+cat('\n')
+summary(table(data2$patient_age))
+cat('\n')
+
+GGpatient_age <- ggplot(data=df, mapping=aes(patient_age)) + geom_histogram(color = "lightsteelblue", fill ='azure3', bins = 35) +  ggtitle("Patient Age") + labs(x='age', y='Frequency') + theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGpatient_age)
+
+
+
+#reclassify patients 300+ older as 89 years old
+#data2$patient_age <- ifelse(data2$patient_age >= 300, 89, data2$patient_age)
+GGpatient_age2 <- ggplot(data=data4, mapping=aes(patient_age)) + geom_histogram(color = "lightsteelblue", fill ='azure4', bins = 35) +  ggtitle("Patient Age") + labs(x='age', y='Frequency') + theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGpatient_age2)
+
+
+```
+Patients whos age was deidentified to 300+ years at time of admission will be reclassified as 89 years old. 89 years old is the cutoff for when deidentification process occurs in the older population.
+
+
+
+
+
+
+
+
+
+
+
+gender EDA
+```{r}
+GGmaturity <- ggplot(data=data4, mapping=aes(x=as.factor(gender))) + geom_bar(color = "lightsteelblue",fill = 'azure4', na.rm = TRUE) +  ggtitle("Gender") + labs(x='Groups', y='Frequency') + theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGmaturity)
+
+
+```
+
+
+
+ethnicity EDA
+```{r}
+
+GGethnic <- ggplot(data=data4, mapping=aes(x=as.factor(ethnicity))) + geom_bar(color = "lightsteelblue",fill = 'azure4', na.rm = TRUE) +  ggtitle("Ethnicities") + labs(x='Ethnic Groups', y='Frequency') + theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGethnic)
+
+
+
+```
+Ethnic Group is predominantly European American
+
+
+
+
+
+insurance EDA
+```{r}
+
+GGinsurance <- ggplot(data=data4, mapping=aes(x=as.factor(insurance))) + geom_bar(color = "lightsteelblue",fill = 'azure4', na.rm = TRUE) +  ggtitle("Insurance") + labs(x='Payers', y='Frequency') + theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGinsurance)
+
+```
+Medicare and private insurance policies are the most common
+
+
+hadm_id_los EDA
+```{r}
+GGlos <- ggplot(data=data4, mapping=aes(hadm_id_los)) + geom_histogram(color = "lightsteelblue",fill = 'azure4', na.rm = TRUE, bins = 50) +  ggtitle("Length of Stay") + labs(x='Days', y='Frequency') + theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGlos)
+```
+
+
+
+
+has_chemo EDA
+```{r}
+
+
+GGchemo <- ggplot(data=data4, mapping=aes(x=as.factor(has_chemo))) + geom_bar(color = "lightsteelblue",fill = 'azure4', na.rm = TRUE) +  ggtitle("Use of Chemotherapy") + labs(x='Groups', y='Frequency') + theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGchemo)
+
+```
+
+
+
+has_radio EDA
+```{r}
+
+GGradio <- ggplot(data=data4, mapping=aes(x=as.factor(has_radio))) + geom_bar(color = "lightsteelblue",fill = 'azure4', na.rm = TRUE) +  ggtitle("Use of Radiotherapy") + labs(x='Groups', y='Frequency') + theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGradio)
+
+
+
+```
+
+
+
+hospital_expire_flag EDA
+```{r}
+GGmortality <- ggplot(data=data4, mapping=aes(x=as.factor(hospital_expire_flag))) + geom_bar(color = "lightsteelblue",fill = 'azure4', na.rm = TRUE) +  ggtitle("Patient Died in Hospital") + labs(x='Groups', y='Frequency') + theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGmortality)
+```
+
+
+
+
+
+
+
+Trivariate relationships
+```{r}
+
+
+
+
+
+GGageWBCMAXmortality <- ggplot(data=data4, mapping=aes(x =patient_age, y = WhiteBloodCell_max_value, col = hospital_expire_flag))  + geom_jitter(na.rm = T)  + ggtitle("White Blood Cell Count for patients demaracated by death at hospital") + labs(x='age', y='White Blood Cell Max Value') + theme_bw() + theme(
+  
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGageWBCMAXmortality)
+
+
+GGageWBCMINmortality <- ggplot(data=data4, mapping=aes(x =patient_age, y = WhiteBloodCell_min_value, col = hospital_expire_flag))  + geom_jitter(na.rm = T)  + ggtitle("White Blood Cell Count for patients demaracated by death at hospital") + labs(x='age', y='White Blood Cell Min Value') + theme_bw() + theme(
+  
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGageWBCMINmortality)
+
+
+GGageBicarbionateMAXMortality <- ggplot(data=data4, mapping=aes(x =patient_age, y = Bicarbonate_max_value, col = hospital_expire_flag))  + geom_jitter(na.rm = T)   + ggtitle("Bicarbonate Max Value for patients demaracated by death at hospital") + labs(x='age', y='Bicarbonate Max Value') + theme_bw() + theme(
+  
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGageBicarbionateMAXMortality)
+
+GGageBicarbionateMINMortality <- ggplot(data=data4, mapping=aes(x =patient_age, y = Bicarbonate_min_value, col = hospital_expire_flag))  + geom_jitter(na.rm = T)   + ggtitle("Bicarbonate Min Value for patients demaracated by death at hospital") + labs(x='age', y='Bicarbonate Min Value') + theme_bw() + theme(
+  
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGageBicarbionateMINMortality)
+
+
+GGagePlatMAXMortality <- ggplot(data=data4, mapping=aes(x =patient_age, y = PlateletCount_max_value, col = hospital_expire_flag))  + geom_jitter(na.rm = T)  + ggtitle("Platlet Max Count for patients demaracated by death at hospital") + labs(x='age', y='Platlet Max Value') + theme_bw() + theme(
+  
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGagePlatMAXMortality)
+
+
+GGagePlatMINMortality <- ggplot(data=data4, mapping=aes(x =patient_age, y = PlateletCount_min_value, col = hospital_expire_flag))  + geom_jitter(na.rm = T)  + ggtitle("Platlet Max Count for patients demaracated by death at hospital") + labs(x='age', y='Platlet Max Count Max Value') + theme_bw() + theme(
+  
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGagePlatMINMortality)
+
+
+
+
+GGageLOSmortality <- ggplot(data=data4, mapping=aes(x =patient_age, y = hadm_id_los, col = hospital_expire_flag))  + geom_jitter(na.rm = T)  + ggtitle("Length of Stay for patients demaracated by death at hospital") + labs(x='age', y='Length of Stay (days)') + theme_bw() + theme(
+  
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGageLOSmortality)
+
+
+GGagepHMINmortality <- ggplot(data=data4, mapping=aes(x =patient_age, y = BloodpH_min_value, col = hospital_expire_flag))  + geom_jitter(na.rm = T)  + ggtitle("Minimum blood pH Value for patients demaracated by death at hospital") + labs(x='age', y='Minimum blood pH Value') + theme_bw() + theme(
+  
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGagepHMINmortality)
+
+GGagepHMAXmortality <- ggplot(data=data4, mapping=aes(x =patient_age, y = BloodpH_max_value, col = hospital_expire_flag))  + geom_jitter(na.rm = T)  + ggtitle("Maximum blood pH Value for patients demaracated by death at hospital") + labs(x='age', y='Maximum blood pH Value') + theme_bw() + theme(
+  
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+plot(GGagepHMAXmortality)
+
+
+
+
+
+
+
+
+
+```
+As noted later on in the decision tree method, White blood cell count and blood ph are determining factors in finding differences between those whom died with lung cancer and those who survived. Moreover the demaracation between groups is most clear in minimum white blood cell count and blood pH values.
+
+
+
+
+
+
+
+
+
+
+
+upsampled minority class
+```{r}
+
+
+data6 <- subset(data4, select = -c(PlateletCount_min_value))
+
+#data6$hospital_expire_flag <- factor(lung2$hospital_expire_flag)
+
+#new <- SMOTE(form = hospital_expire_flag ~ ., data = lung, perc.over = 100)
+data6 <- SMOTE(form = hospital_expire_flag ~ ., data = data6, perc.over = 100)
+data6$hospital_expire_flag <- factor(data6$hospital_expire_flag)
+summary(data6)
+```
+
+
+unbalanced classes 
+```{r}
+data7 <- subset(data4, select = -c(PlateletCount_min_value))
+
+```
+
+
+
+
+
+Test Train Split Upsampled Class
+```{r}
+#data6$hospital_expire_flag <- factor(data6$hospital_expire_flag)
+
+
+intrain <- createDataPartition(y = data6$hospital_expire_flag, p= 0.7, list = FALSE)
+training <- data6[intrain,]
+testing <- data6[-intrain,]
+dim(training); dim(testing)
+head(training)
+head(testing)
+
+training$patient_age <- as.numeric(training$patient_age)
+training$hadm_id_los <- as.numeric(training$hadm_id_los)
+training$gender <- as.numeric(training$gender)
+training$insurance <- as.numeric(training$insurance)
+training$Bicarbonate_min_value <- as.numeric(training$Bicarbonate_min_value)
+training$Bicarbonate_max_value <- as.numeric(training$Bicarbonate_max_value)
+#training$PlateletCount_min_value <- as.numeric(training$PlateletCount_min_value)
+training$PlateletCount_max_value <- as.numeric(training$PlateletCount_max_value)
+training$RedBloodCell_min_value <- as.numeric(training$RedBloodCell_min_value)
+training$RedBloodCell_max_value <- as.numeric(training$RedBloodCell_max_value)
+training$WhiteBloodCell_min_value <- as.numeric(training$WhiteBloodCell_min_value)
+training$WhiteBloodCell_max_value <- as.numeric(training$WhiteBloodCell_max_value)
+training$BloodpH_min_value <- as.numeric(training$BloodpH_min_value)
+training$BloodpH_max_value <- as.numeric(training$BloodpH_max_value)
+
+
+
+testing$patient_age <- as.numeric(testing$patient_age)
+testing$hadm_id_los <- as.numeric(testing$hadm_id_los)
+testing$gender <- as.numeric(testing$gender)
+testing$insurance <- as.numeric(testing$insurance)
+testing$Bicarbonate_min_value <- as.numeric(testing$Bicarbonate_min_value)
+testing$Bicarbonate_max_value <- as.numeric(testing$Bicarbonate_max_value)
+#testing$PlateletCount_min_value <- as.numeric(testing$PlateletCount_min_value)
+testing$PlateletCount_max_value <- as.numeric(testing$PlateletCount_max_value)
+testing$RedBloodCell_min_value <- as.numeric(testing$RedBloodCell_min_value)
+testing$RedBloodCell_max_value <- as.numeric(testing$RedBloodCell_max_value)
+testing$WhiteBloodCell_min_value <- as.numeric(testing$WhiteBloodCell_min_value)
+testing$WhiteBloodCell_max_value <- as.numeric(testing$WhiteBloodCell_max_value)
+testing$BloodpH_min_value <- as.numeric(testing$BloodpH_min_value)
+testing$BloodpH_max_value <- as.numeric(testing$BloodpH_max_value)
+
+
+training$Bicarbonate_min_value <- with(training, impute(Bicarbonate_min_value, median))
+training$Bicarbonate_max_value <- with(training, impute(Bicarbonate_max_value, median))
+training$BloodpH_min_value <- with(training, impute(BloodpH_min_value, median))
+training$BloodpH_max_value <- with(training, impute(BloodpH_max_value, median))
+training$RedBloodCell_max_value <- with(training, impute(RedBloodCell_max_value, median))
+training$RedBloodCell_min_value <- with(training, impute(RedBloodCell_min_value, median))
+training$WhiteBloodCell_min_value <- with(training, impute(WhiteBloodCell_min_value, median))
+training$WhiteBloodCell_max_value <- with(training, impute(WhiteBloodCell_max_value, median))
+#training$PlateletCount_min_value <- with(training, impute(PlateletCount_min_value, median))
+training$PlateletCount_max_value <- with(training, impute(PlateletCount_max_value, median))
+
+testing$Bicarbonate_min_value <- with(testing, impute(Bicarbonate_min_value, median))
+testing$Bicarbonate_max_value <- with(testing, impute(Bicarbonate_max_value, median))
+testing$BloodpH_min_value <- with(testing, impute(BloodpH_min_value, median))
+testing$BloodpH_max_value <- with(testing, impute(BloodpH_max_value, median))
+testing$RedBloodCell_max_value <- with(testing, impute(RedBloodCell_max_value, median))
+testing$RedBloodCell_min_value <- with(testing, impute(RedBloodCell_min_value, median))
+testing$WhiteBloodCell_min_value <- with(testing, impute(WhiteBloodCell_min_value, median))
+testing$WhiteBloodCell_max_value <- with(testing, impute(WhiteBloodCell_max_value, median))
+#testing$PlateletCount_min_value <- with(testing, impute(PlateletCount_min_value, median))
+testing$PlateletCount_max_value <- with(testing, impute(PlateletCount_max_value, median))
+
+#write.csv(data3,"test3.csv", row.names = FALSE)
+#summary(data3)
+
+
+
+training$hospital_expire_flag <- factor(training$hospital_expire_flag)
+testing$hospital_expire_flag <- factor(testing$hospital_expire_flag)
+levels(training$hospital_expire_flag) <- c("F", "T")
+levels(testing$hospital_expire_flag) <- c("F", "T")
+
+
+
+```
+
+
+```{r}
+summary(testing)
+any(is.na(testing))
+```
+
+
+
+```{r}
+summary(testing)
+any(is.na(testing))
+```
+
+
+SVM Linear Model
+```{r}
+
+trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE,
+                         method = "repeatedcv", number = 10, repeats = 3)
+
+
+set.seed(3233)
+grid <- expand.grid(C = c(0.005,0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2,5))
+
+levels(training$hospital_expire_flag) <- c("F", "T")
+levels(testing$hospital_expire_flag) <- c("F", "T")
+
+svm_Linear_Grid <- train(hospital_expire_flag ~., data = training, method = "svmLinear",
+    trControl=trctrl,
+    preProcess = c("center", "scale"),
+    metric = 'ROC',
+    tuneGrid = grid,
+    tuneLength = 10) 
+
+
+
+svm_Linear_Grid 
+
+
+plot(svm_Linear_Grid)
+
+
+```
+
+
+
+
+
+```{r}
+#test_pred <- predict(svm_Radial, newdata = testing, type = "prob")
+#confusionMatrix(predict(svm_Radial, newdata = testing), factor(testing$hospital_expire_flag),  positive="T")
+
+
+test_pred <- predict(svm_Linear_Grid, newdata = testing)
+test_pred
+
+confusionMatrix(test_pred, factor(testing$hospital_expire_flag)) 
+levels(testing$hospital_expire_flag)
+confusionMatrix(test_pred, testing$hospital_expire_flag,  positive="T")
+
+
+svmLinearROC <- roc(testing$hospital_expire_flag, as.numeric(test_pred))
+
+
+
+plot.roc(svmLinearROC, print.auc=TRUE, legacy.axes=TRUE) 
+
+
+
+
+
+```
+
+
+
+
+SVM Radial Model
+```{r}
+set.seed(56)
+
+## Using Radial Kernal
+
+
+trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE,
+                       savePredictions = T, method = "cv", number = 5)
+
+
+
+svmGrid <- expand.grid(sigma= 2^c(-15,-10, -5, 0), C= 2^c(0:5))
+svm_Radial <- train(hospital_expire_flag ~., data = training, method = "svmRadial",
+                      trControl=trctrl,
+                      preProcess = c("center", "scale"),
+                      metric="ROC",
+                      tuneGrid = svmGrid,
+                      tuneLength = 2) 
+
+
+
+plot(svm_Radial)
+
+```
+
+
+
+SVM Radial RBF Prediction
+```{r}
+
+test_pred <- predict(svm_Radial, newdata = testing, type = "prob")
+confusionMatrix(predict(svm_Radial, newdata = testing), factor(testing$hospital_expire_flag),  positive="T")
+
+
+svmROC <- roc(testing$hospital_expire_flag, test_pred[, "T"])
+
+
+plot.roc(svmROC, print.auc=TRUE, legacy.axes=TRUE)  
+```
+
+
+
+
+
+
+
+SVM Poly Model
+```{r}
+
+set.seed(56)
+
+
+SVMPgrid <- expand.grid(C = c(0.5,0.6,0.7,0.8,0.9),degree=c(1,2,3), scale=c(0.1,0.2,0.3))
+#http://learnrmanoharkapse.blogspot.com/2019/01/basic-of-r-session-21-support-vector.html
+trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE,
+                       savePredictions = T, method = "cv", number = 5)
+
+
+svm_Poly <- train(hospital_expire_flag ~., data = training, method = "svmPoly",
+                      trControl=trctrl,
+                      preProcess = c("center", "scale"),
+                      metric="ROC",
+                      tunegrid = SVMPgrid,
+                      tuneLength = 5)
+svm_Poly
+plot(svm_Poly)
+
+
+
+
+
+
+
+
+
+```
+
+
+SVM Poly AUC
+```{r}
+
+test_pred <- predict(svm_Poly, newdata = testing, type = "prob")
+confusionMatrix(predict(svm_Poly, newdata = testing), factor(testing$hospital_expire_flag),  positive="T")
+
+
+svmPoly <- roc(testing$hospital_expire_flag, test_pred[, "T"])
+
+
+
+plot.roc(svmPoly, print.auc=TRUE, legacy.axes=TRUE) 
+
+
+```
+
+
+
+
+
+
+
+Ridge Regression
+```{r}
+lambda <- 10^seq(-3, 3, length = 100)
+
+# Build the model
+set.seed(123)
+
+ridge <- train(
+  hospital_expire_flag ~., data = training, method = "glmnet",
+  trControl = trainControl("cv", number = 10),
+  preProcess = c("center", "scale"),
+  tuneGrid = expand.grid(alpha = 0, lambda = lambda)
+  
+  )
+
+coef(ridge$finalModel, ridge$bestTune$lambda)
+
+
+predictions <- ridge %>% predict(testing)
+
+
+data.frame(
+  RMSE = RMSE(as.numeric(predictions), as.numeric(testing$hospital_expire_flag)),
+  Rsquare = R2(as.numeric(predictions), as.numeric(testing$hospital_expire_flag))
+)
+
+
+```
+
+
+
+lasso regression 
+```{r}
+
+
+set.seed(123)
+lasso <- train(
+  hospital_expire_flag ~., data = training, method = "glmnet",
+  trControl = trainControl("cv", number = 10),
+  preProcess = c("center", "scale"),
+  tuneGrid = expand.grid(alpha = 1, lambda = lambda)
+  )
+
+coef(lasso$finalModel, lasso$bestTune$lambda)
+
+predictions <- lasso %>% predict(testing)
+
+data.frame(
+  RMSE = RMSE(as.numeric(predictions), as.numeric(testing$hospital_expire_flag)),
+  Rsquare = R2(as.numeric(predictions), as.numeric(testing$hospital_expire_flag))
+)
+```
+
+Elastic Net
+```{r}
+
+trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE,
+                       savePredictions = T, method = "cv", number = 10)
+
+
+
+elastic <- train(
+  hospital_expire_flag ~., 
+  data = training, method = "glmnet",
+  trControl = trctrl,
+  preProcess = c("center", "scale"),
+  tuneLength = 10
+  )
+
+elastic
+
+plot(elastic)
+
+coef(elastic$finalModel, elastic$bestTune$lambda)
+
+predictions <- elastic %>% predict(testing)
+
+data.frame(
+  RMSE = RMSE(as.numeric(predictions), as.numeric(testing$hospital_expire_flag)),
+  Rsquare = R2(as.numeric(predictions), as.numeric(testing$hospital_expire_flag))
+)
+
+```
+
+The final values used for the model were alpha = 0.6 and lambda = 0.02309484.
+
+
+
+
+```{r}
+
+get_best_result = function(caret_fit) {
+  best = which(rownames(caret_fit$results) == rownames(caret_fit$bestTune))
+  best_result = caret_fit$results[best, ]
+  rownames(best_result) = NULL
+  best_result
+}
+
+
+
+get_best_result(elastic)
+
+```
+
+
+
+
+
+
+```{r}
+
+test_pred <- predict(elastic, newdata = testing, type = "prob")
+confusionMatrix(predict(elastic, newdata = testing), factor(testing$hospital_expire_flag),  positive="T")
+
+
+elastique <- roc(testing$hospital_expire_flag, test_pred[, "T"])
+
+
+plot.roc(elastique, print.auc=TRUE, legacy.axes=TRUE) 
+
+
+
+
+```
+
+
+
+
+
+
+
+Elastic Net with interactions
+```{r}
+
+#set.seed(123)
+#elastic <- train(
+#  hospital_expire_flag ~(.)^2, data = training, method = "glmnet",
+#  trControl = trainControl("cv", number = 10),
+#  tuneLength = 10
+#  )
+# Model coefficients
+#coef(elastic$finalModel, elastic$bestTune$lambda)
+# Make predictions
+#predictions <- elastic %>% predict(testing)
+# Model prediction performance
+#data.frame(
+#  RMSE = RMSE(as.numeric(predictions), as.numeric(testing$hospital_expire_flag)),
+#  Rsquare = R2(as.numeric(predictions), as.numeric(testing$hospital_expire_flag))
+#)
+```
+Elastic net with interactions is not run because it does not improve AUC and is extremely time exhaustive. 
+
+
+
+
+Logistic Regression Model
+```{r}
+
+
+set.seed(56)
+
+
+
+trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE,
+                       savePredictions = T, method = "cv", number = 5)
+
+LogisticModel = train(
+  form = hospital_expire_flag ~ .,
+  data = training,
+  trControl = trctrl,
+  preProcess = c("center", "scale"),
+  method = "glm",
+  family = "binomial"
+)
+
+LogisticModel
+
+
+
+test_pred <- predict(LogisticModel, newdata = testing, type = "prob")
+confusionMatrix(predict(LogisticModel, newdata = testing), factor(testing$hospital_expire_flag),  positive="T")
+
+
+logistique <- roc(testing$hospital_expire_flag, test_pred[, "T"])
+
+
+plot.roc(logistique, print.auc=TRUE, legacy.axes=TRUE) 
+
+
+
+
+```
+
+
+
+
+
+
+
+Decision Tree
+```{r}
+
+
+trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE,
+  savePredictions = "final", method='repeatedcv', number=5, repeats=3)
+
+
+set.seed(3233)
+dtree_fit <- train(hospital_expire_flag ~., 
+                   data = training, method = "rpart",
+                   preProcess = c("center", "scale"),
+                   parms = list(split = "information"),
+                   trControl=trctrl, 
+                   tuneLength = 10)
+
+dtree_fit
+
+test_pred <- predict(dtree_fit, newdata = testing)
+test_pred
+
+confusionMatrix(test_pred, factor(testing$hospital_expire_flag),  positive="T")
+
+
+dtreeProbs <- predict(dtree_fit, testing, type = "prob")
+
+dtreeROC <- roc(testing$hospital_expire_flag, dtreeProbs[, "T"])
+
+plot.roc(dtreeROC, print.auc=TRUE)  
+plot.roc(dtreeROC, print.auc=TRUE, legacy.axes=TRUE) 
+
+```
+
+Decision Tree 2
+```{r}
+
+set.seed(3233)
+
+dtree_fit2 <- train(hospital_expire_flag ~., data = training, method = "rpart")
+dtree_fit2
+
+
+test_pred2 <- predict(dtree_fit2, newdata = testing)
+test_pred2
+
+confusionMatrix(test_pred2, factor(testing$hospital_expire_flag),  positive="T")
+
+prp(dtree_fit$finalModel, box.palette = "Reds")
+prp(dtree_fit2$finalModel, box.palette = "Reds")
+
+dtreeProbs <- predict(dtree_fit, testing, type = "prob")
+
+dtreeROC <- roc(testing$hospital_expire_flag, dtreeProbs[, "T"])
+
+plot.roc(dtreeROC, print.auc=TRUE)  
+plot.roc(dtreeROC, print.auc=TRUE, legacy.axes=TRUE) 
+```
+
+
+
+
+
+Random Forest
+```{r}
+
+
+trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE,
+  savePredictions = "final", method='repeatedcv', number=5, repeats=3)
+
+
+
+#trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE,
+#  savePredictions = "T", method='repeatedcv', number=5, repeats=3)
+
+
+training$hospital_expire_flag= factor(training$hospital_expire_flag)
+testing$hospital_expire_flag= factor(testing$hospital_expire_flag)
+
+
+set.seed(3233)
+
+rf <- train(hospital_expire_flag ~., 
+                    data = training, method = "rf",
+                    trControl=trctrl,
+                    preProcess = c("center", "scale"),
+                    metric="ROC",
+                    tuneLength = 15) 
+rf 
+
+test_pred <- predict(rf, newdata = testing)
+test_pred
+confusionMatrix(test_pred, factor(testing$hospital_expire_flag),  positive="T")
+any(is.na(factor(testing$hospital_expire_flag)))
+
+set.seed(3233)
+
+#bestMtry <- tuneRF(training[,1:17], factor(training[,'hospital_expire_flag']), stepFactor = 3.5, improve = #0.05, ntreeTry = 500, doBest=TRUE)
+
+
+
+# Predict test data for confusion matrix:
+#test_pred <- predict(bestMtry, newdata = testing)
+#test_pred
+confusionMatrix(test_pred, factor(testing$hospital_expire_flag), positive="T")
+
+# ROC curve
+rfProbs <- predict(rf, testing, type = "prob")
+
+rfROC <- roc(testing$hospital_expire_flag, rfProbs[, "T"])
+plot.roc(rfROC, print.auc=TRUE)  
+plot.roc(rfROC, print.auc=TRUE, legacy.axes=TRUE) 
+
+
+
+
+
+```
+
+
+
+
+
+
+Comparison of Model Performance
+```{r}
+
+UPsvmPolyAUC <- .812
+UPsvmRadialAUC <- .827
+UPsvmLinearAUC <- .758
+UPLOGAUC <- .779
+UPelasticNetAUC <- .782
+UPDTAUC <- .834
+UPRFAUC <- .906
+
+
+
+UPauc <- data.frame(
+  Models=c("SVM Radial","Logistic Regression","Elastic Net","Decision Tree","Random Forest") ,  
+  AUC=c(UPsvmRadialAUC,UPLOGAUC,UPelasticNetAUC,UPDTAUC,UPRFAUC)
+  )
+
+GGAupAUC <- ggplot(data=UPauc, aes(x=Models, y=AUC,  fill=Models)) +
+    geom_bar(colour="black", stat="identity") +  ggtitle("Model Performance with SMOTE upsampling") +  ylim(0, 1) + geom_text(aes(label = AUC), position=position_dodge(width=0.9), vjust=-0.25)  +theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+
+plot(GGAupAUC)
+
+
+```
+
+
+
+
+Test Train Split imbalanced
+```{r}
+
+
+
+intrain <- createDataPartition(y = data7$hospital_expire_flag, p= 0.7, list = FALSE)
+training <- data7[intrain,]
+testing <- data7[-intrain,]
+dim(training); dim(testing)
+head(training)
+head(testing)
+
+training$patient_age <- as.numeric(training$patient_age)
+training$hadm_id_los <- as.numeric(training$hadm_id_los)
+training$gender <- as.numeric(training$gender)
+training$insurance <- as.numeric(training$insurance)
+training$Bicarbonate_min_value <- as.numeric(training$Bicarbonate_min_value)
+training$Bicarbonate_max_value <- as.numeric(training$Bicarbonate_max_value)
+#training$PlateletCount_min_value <- as.numeric(training$PlateletCount_min_value)
+training$PlateletCount_max_value <- as.numeric(training$PlateletCount_max_value)
+training$RedBloodCell_min_value <- as.numeric(training$RedBloodCell_min_value)
+training$RedBloodCell_max_value <- as.numeric(training$RedBloodCell_max_value)
+training$WhiteBloodCell_min_value <- as.numeric(training$WhiteBloodCell_min_value)
+training$WhiteBloodCell_max_value <- as.numeric(training$WhiteBloodCell_max_value)
+training$BloodpH_min_value <- as.numeric(training$BloodpH_min_value)
+training$BloodpH_max_value <- as.numeric(training$BloodpH_max_value)
+
+
+
+testing$patient_age <- as.numeric(testing$patient_age)
+testing$hadm_id_los <- as.numeric(testing$hadm_id_los)
+testing$gender <- as.numeric(testing$gender)
+testing$insurance <- as.numeric(testing$insurance)
+testing$Bicarbonate_min_value <- as.numeric(testing$Bicarbonate_min_value)
+testing$Bicarbonate_max_value <- as.numeric(testing$Bicarbonate_max_value)
+#testing$PlateletCount_min_value <- as.numeric(testing$PlateletCount_min_value)
+testing$PlateletCount_max_value <- as.numeric(testing$PlateletCount_max_value)
+testing$RedBloodCell_min_value <- as.numeric(testing$RedBloodCell_min_value)
+testing$RedBloodCell_max_value <- as.numeric(testing$RedBloodCell_max_value)
+testing$WhiteBloodCell_min_value <- as.numeric(testing$WhiteBloodCell_min_value)
+testing$WhiteBloodCell_max_value <- as.numeric(testing$WhiteBloodCell_max_value)
+testing$BloodpH_min_value <- as.numeric(testing$BloodpH_min_value)
+testing$BloodpH_max_value <- as.numeric(testing$BloodpH_max_value)
+
+
+
+training$hospital_expire_flag <- factor(training$hospital_expire_flag)
+testing$hospital_expire_flag <- factor(testing$hospital_expire_flag)
+levels(training$hospital_expire_flag) <- c("F", "T")
+levels(testing$hospital_expire_flag) <- c("F", "T")
+
+training$Bicarbonate_min_value <- with(training, impute(Bicarbonate_min_value, median))
+training$Bicarbonate_max_value <- with(training, impute(Bicarbonate_max_value, median))
+training$BloodpH_min_value <- with(training, impute(BloodpH_min_value, median))
+training$BloodpH_max_value <- with(training, impute(BloodpH_max_value, median))
+training$RedBloodCell_max_value <- with(training, impute(RedBloodCell_max_value, median))
+training$RedBloodCell_min_value <- with(training, impute(RedBloodCell_min_value, median))
+training$WhiteBloodCell_min_value <- with(training, impute(WhiteBloodCell_min_value, median))
+training$WhiteBloodCell_max_value <- with(training, impute(WhiteBloodCell_max_value, median))
+#training$PlateletCount_min_value <- with(training, impute(PlateletCount_min_value, median))
+training$PlateletCount_max_value <- with(training, impute(PlateletCount_max_value, median))
+
+testing$Bicarbonate_min_value <- with(testing, impute(Bicarbonate_min_value, median))
+testing$Bicarbonate_max_value <- with(testing, impute(Bicarbonate_max_value, median))
+testing$BloodpH_min_value <- with(testing, impute(BloodpH_min_value, median))
+testing$BloodpH_max_value <- with(testing, impute(BloodpH_max_value, median))
+testing$RedBloodCell_max_value <- with(testing, impute(RedBloodCell_max_value, median))
+testing$RedBloodCell_min_value <- with(testing, impute(RedBloodCell_min_value, median))
+testing$WhiteBloodCell_min_value <- with(testing, impute(WhiteBloodCell_min_value, median))
+testing$WhiteBloodCell_max_value <- with(testing, impute(WhiteBloodCell_max_value, median))
+#testing$PlateletCount_min_value <- with(testing, impute(PlateletCount_min_value, median))
+testing$PlateletCount_max_value <- with(testing, impute(PlateletCount_max_value, median))
+
+any(is.na(testing))
+any(is.na(training))
+```
+
+
+SVM Linear Model imbalanced
+```{r}
+
+
+trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE,
+                         method = "repeatedcv", number = 10, repeats = 3)
+
+
+set.seed(3233)
+grid <- expand.grid(C = c(0.005,0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2,5))
+
+levels(training$hospital_expire_flag) <- c("F", "T")
+levels(testing$hospital_expire_flag) <- c("F", "T")
+
+svm_Linear_Grid <- train(hospital_expire_flag ~., data = training, method = "svmLinear",
+    trControl=trctrl,
+    preProcess = c("center", "scale"),
+    metric = 'ROC',
+    tuneGrid = grid,
+    tuneLength = 10) 
+svm_Linear_Grid 
+
+
+plot(svm_Linear_Grid)
+
+```
+
+
+
+
+
+```{r}
+
+#test_pred <- predict(svm_Radial, newdata = testing, type = "prob")
+#confusionMatrix(predict(svm_Radial, newdata = testing), factor(testing$hospital_expire_flag),  positive="T")
+
+
+test_pred <- predict(svm_Linear_Grid, newdata = testing)
+test_pred
+
+
+confusionMatrix(test_pred, factor(testing$hospital_expire_flag)) 
+levels(testing$hospital_expire_flag)
+confusionMatrix(test_pred, testing$hospital_expire_flag,  positive="T")
+
+svmLinearROC <- roc(testing$hospital_expire_flag, as.numeric(test_pred))
+
+plot.roc(svmLinearROC, print.auc=TRUE, legacy.axes=TRUE) 
+
+
+
+```
+
+
+
+
+SVM Radial Model imbalanced
+```{r}
+
+set.seed(56)
+
+
+
+trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE,
+                       savePredictions = T, method = "cv", number = 5)
+
+
+
+
+svmGrid <- expand.grid(sigma= 2^c(-15,-10, -5, 0), C= 2^c(0:5))
+svm_Radial <- train(hospital_expire_flag ~., data = training, method = "svmRadial",
+                      trControl=trctrl,
+                      preProcess = c("center", "scale"),
+                      metric="ROC",
+                      tuneGrid = svmGrid,
+                      tuneLength = 2)
+
+plot(svm_Radial)
+```
+
+
+
+SVM Radial RBF Prediction imbalanced
+```{r}
+
+test_pred <- predict(svm_Radial, newdata = testing, type = "prob")
+confusionMatrix(predict(svm_Radial, newdata = testing), factor(testing$hospital_expire_flag),  positive="T")
+
+
+svmROC <- roc(testing$hospital_expire_flag, test_pred[, "T"])
+
+
+plot.roc(svmROC, print.auc=TRUE, legacy.axes=TRUE)  
+```
+
+
+
+
+
+
+
+SVM Poly Model imbalanced
+```{r}
+
+
+set.seed(56)
+
+
+SVMPgrid <- expand.grid(C = c(0.5,0.6,0.7,0.8,0.9),degree=c(1,2,3), scale=c(0.1,0.2,0.3))
+#http://learnrmanoharkapse.blogspot.com/2019/01/basic-of-r-session-21-support-vector.html
+trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE,
+                       savePredictions = T, method = "cv", number = 5)
+
+#trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE,# Use AUC to pick the best model
+#                       savePredictions = T, method = "cv", number = 5, repeats = 3)
+
+
+svm_Poly <- train(hospital_expire_flag ~., data = training, method = "svmPoly",
+                      trControl=trctrl,
+                      preProcess = c("center", "scale"),
+                      metric="ROC",
+                      tunegrid = SVMPgrid,
+                      tuneLength = 5) 
+
+svm_Poly
+plot(svm_Poly)
+
+
+
+
+```
+
+
+SVM Poly AUC imbalanced
+```{r}
+
+
+test_pred <- predict(svm_Poly, newdata = testing, type = "prob")
+confusionMatrix(predict(svm_Poly, newdata = testing), factor(testing$hospital_expire_flag),  positive="T")
+
+
+svmPoly <- roc(testing$hospital_expire_flag, test_pred[, "T"])
+
+
+plot.roc(svmPoly, print.auc=TRUE, legacy.axes=TRUE) 
+
+```
+
+
+
+
+
+
+Ridge Regression imbalanced
+```{r}
+
+lambda <- 10^seq(-3, 3, length = 100)
+
+set.seed(123)
+ridge <- train(
+  hospital_expire_flag ~., data = training, method = "glmnet",
+  trControl = trainControl("cv", number = 10),
+  tuneGrid = expand.grid(alpha = 0, lambda = lambda)
+  )
+
+coef(ridge$finalModel, ridge$bestTune$lambda)
+
+predictions <- ridge %>% predict(testing)
+
+data.frame(
+  RMSE = RMSE(as.numeric(predictions), as.numeric(testing$hospital_expire_flag)),
+  Rsquare = R2(as.numeric(predictions), as.numeric(testing$hospital_expire_flag))
+)
+
+```
+
+
+
+lasso regression imbalanced
+```{r}
+
+
+set.seed(123)
+lasso <- train(
+  hospital_expire_flag ~., data = training, method = "glmnet",
+  trControl = trainControl("cv", number = 10),
+  tuneGrid = expand.grid(alpha = 1, lambda = lambda)
+  )
+
+coef(lasso$finalModel, lasso$bestTune$lambda)
+
+predictions <- lasso %>% predict(testing)
+
+data.frame(
+  RMSE = RMSE(as.numeric(predictions), as.numeric(testing$hospital_expire_flag)),
+  Rsquare = R2(as.numeric(predictions), as.numeric(testing$hospital_expire_flag))
+)
+```
+
+
+```{r}
+
+
+trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE,
+                       savePredictions = T, method = "cv", number = 10)
+
+
+elastic <- train(
+  hospital_expire_flag ~., 
+  data = training, method = "glmnet",
+  trControl = trctrl,
+  tuneLength = 10
+  )
+
+elastic
+
+plot(elastic)
+
+coef(elastic$finalModel, elastic$bestTune$lambda)
+
+predictions <- elastic %>% predict(testing)
+
+data.frame(
+  RMSE = RMSE(as.numeric(predictions), as.numeric(testing$hospital_expire_flag)),
+  Rsquare = R2(as.numeric(predictions), as.numeric(testing$hospital_expire_flag))
+)
+```
+
+
+
+```{r}
+
+get_best_result = function(caret_fit) {
+  best = which(rownames(caret_fit$results) == rownames(caret_fit$bestTune))
+  best_result = caret_fit$results[best, ]
+  rownames(best_result) = NULL
+  best_result
+}
+
+
+get_best_result(elastic)
+```
+
+
+
+
+
+
+```{r}
+
+test_pred <- predict(elastic, newdata = testing, type = "prob")
+confusionMatrix(predict(elastic, newdata = testing), factor(testing$hospital_expire_flag),  positive="T")
+
+
+elastique <- roc(testing$hospital_expire_flag, test_pred[, "T"])
+
+
+plot.roc(elastique, print.auc=TRUE, legacy.axes=TRUE) 
+
+
+
+
+```
+
+
+
+
+
+
+
+Elastic Net with interactions imbalanced
+```{r}
+#set.seed(123)
+#elastic <- train(
+#  hospital_expire_flag ~(.)^2, data = training, method = "glmnet",
+#  trControl = trainControl("cv", number = 10),
+#  tuneLength = 10
+#  )
+# Model coefficients
+#coef(elastic$finalModel, elastic$bestTune$lambda)
+# Make predictions
+#predictions <- elastic %>% predict(testing)
+# Model prediction performance
+#data.frame(
+#  RMSE = RMSE(as.numeric(predictions), as.numeric(testing$hospital_expire_flag)),
+#  Rsquare = R2(as.numeric(predictions), as.numeric(testing$hospital_expire_flag))
+#)
+```
+not run due to extended length of time taken to conduct interactions with little observable differences.
+
+
+
+
+Logistic Regression Model imbalanced
+```{r}
+
+
+set.seed(56)
+
+
+
+trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE,
+                       savePredictions = T, method = "cv", number = 5)
+
+LogisticModel = train(
+  form = hospital_expire_flag ~ .,
+  data = training,
+  trControl = trctrl,
+  method = "glm",
+  family = "binomial"
+)
+
+LogisticModel
+
+
+
+test_pred <- predict(LogisticModel, newdata = testing, type = "prob")
+confusionMatrix(predict(LogisticModel, newdata = testing), factor(testing$hospital_expire_flag),  positive="T")
+
+
+logistique <- roc(testing$hospital_expire_flag, test_pred[, "T"])
+
+
+plot.roc(logistique, print.auc=TRUE, legacy.axes=TRUE) 
+
+
+
+
+
+```
+
+
+
+
+
+Decision Tree imbalanced
+```{r}
+
+trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE,
+  savePredictions = "final", method='repeatedcv', number=5, repeats=3)
+
+
+set.seed(3233)
+dtree_fit <- train(hospital_expire_flag ~., data = training, method = "rpart",
+                   
+                   parms = list(split = "information"), 
+                   trControl=trctrl,  
+                   tuneLength = 10)
+
+dtree_fit
+
+
+test_pred <- predict(dtree_fit, newdata = testing)
+test_pred
+
+confusionMatrix(test_pred, factor(testing$hospital_expire_flag),  positive="T")
+
+
+dtreeProbs <- predict(dtree_fit, testing, type = "prob")
+
+dtreeROC <- roc(testing$hospital_expire_flag, dtreeProbs[, "T"])
+
+plot.roc(dtreeROC, print.auc=TRUE)  
+plot.roc(dtreeROC, print.auc=TRUE, legacy.axes=TRUE) 
+
+```
+
+Decision Tree 2 imbalanced
+```{r}
+set.seed(3233)
+
+
+dtree_fit2 <- train(hospital_expire_flag ~., data = training, method = "rpart")
+dtree_fit2
+
+
+test_pred2 <- predict(dtree_fit2, newdata = testing)
+test_pred2
+
+confusionMatrix(test_pred2, factor(testing$hospital_expire_flag),  positive="T")
+
+prp(dtree_fit$finalModel, box.palette = "Reds")
+prp(dtree_fit2$finalModel, box.palette = "Reds")
+
+
+dtreeProbs <- predict(dtree_fit, testing, type = "prob")
+
+dtreeROC <- roc(testing$hospital_expire_flag, dtreeProbs[, "T"])
+
+plot.roc(dtreeROC, print.auc=TRUE)  
+plot.roc(dtreeROC, print.auc=TRUE, legacy.axes=TRUE) 
+```
+
+
+
+
+
+Random Forest imbalanced
+```{r}
+
+
+trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE,
+  savePredictions = "final", method='repeatedcv', number=5, repeats=3)
+
+
+
+#trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE,
+#  savePredictions = "T", method='repeatedcv', number=5, repeats=3)
+
+
+training$hospital_expire_flag= factor(training$hospital_expire_flag)
+testing$hospital_expire_flag= factor(testing$hospital_expire_flag)
+
+
+set.seed(3233)
+
+rf <- train(hospital_expire_flag ~., 
+                    data = training, method = "rf",
+                    trControl=trctrl,
+                    metric="ROC",
+                    tuneLength = 15) #param grid 15 values mtry selected by caret
+rf 
+
+test_pred <- predict(rf, newdata = testing)
+test_pred
+confusionMatrix(test_pred, factor(testing$hospital_expire_flag),  positive="T")
+any(is.na(factor(testing$hospital_expire_flag)))
+# ALT: Tune mtry by tools
+set.seed(3233)
+
+#bestMtry <- tuneRF(training[,1:17], factor(training[,'hospital_expire_flag']), stepFactor = 3.5, improve = 0.05, ntreeTry = 500, doBest=TRUE)
+
+#error with mtry
+
+
+# Predict test data for confusion matrix:
+#test_pred <- predict(bestMtry, newdata = testing)
+test_pred
+confusionMatrix(test_pred, factor(testing$hospital_expire_flag), positive="T")
+
+# ROC curve
+rfProbs <- predict(rf, testing, type = "prob")
+# If NAs, can set na.rm=TRUE:
+rfROC <- roc(testing$hospital_expire_flag, rfProbs[, "T"])
+plot.roc(rfROC, print.auc=TRUE)  
+plot.roc(rfROC, print.auc=TRUE, legacy.axes=TRUE) 
+
+```
+
+
+
+Comparison of Model Performance
+```{r}
+
+svmPolyAUC <- .847
+svmRadialAUC <- .856
+svmLinearAUC <- .755
+LOGAUC <- .781
+elasticNetAUC <- .781
+DTAUC <- .805
+RFAUC <- .913
+
+
+
+Normauc <- data.frame(
+  Models=c("SVM Radial","Logistic Regression","Elastic Net","Decision Tree","Random Forest") ,  
+  AUC=c(svmRadialAUC,LOGAUC,elasticNetAUC,DTAUC,RFAUC)
+  )
+
+GGAAUC <- ggplot(data=Normauc, aes(x=Models, y=AUC,  fill=Models)) +
+    geom_bar(colour="black", stat="identity") +  ggtitle("Model Performance") +  ylim(0, 1) + geom_text(aes(label = AUC), position=position_dodge(width=0.9), vjust=-0.25)  +theme_bw() + theme(
+    plot.title = element_text(hjust = 0.5),
+    text=element_text(size=10,  family="Arial", face ='plain'),
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()) 
+
+plot(GGAAUC)
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
