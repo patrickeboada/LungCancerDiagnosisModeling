@@ -33,7 +33,7 @@ Through the use of spearman correlation a strong correlation between PlateletCou
 
 Furthermore death in the patient population only constituted 31%. Since only 389 patients of the 1631 were represented, upsampling measures with SMOTE were used to balance the groups. Models were first run with the upsampled dataset and then compared to the unaltered dataset. All models of the upsampled dataset had higher AUC values ranging from 0.01 to .05.
 
-Modeling variations included SVM (Linear, RBF, and Polynomial), elastic net, logistic regression, decision tree, and random forest. The highest AUC value was from the random forest model (91.3%), with SVM RBF as second place (85.6%). Interestingly enough when comparing all models ran, the natural original form of the data outperformed the SMOTE up sampled data by 0.01-0.03 points on AUC.
+Modeling variations included SVM (Linear, RBF, and Polynomial), elastic net, logistic regression, decision tree, and random forest. The highest AUC value was from the random forest model (91.3%), with SVM RBF as second place (85.6%).
 
 Libraries:
 ```{r}
@@ -481,25 +481,25 @@ plot(GGRBCMIN)
 WhiteBloodCell
 ```{r}
 
-GGRBCMAX<- ggplot(data=data4, mapping=aes(x=WhiteBloodCell_max_value)) + geom_histogram(color ='azure4', fill = 'royalblue', bins = 45, na.rm = TRUE) + ggtitle("WhiteBloodCell_max_value") + labs(x='WBC  count', y='Frequency') + theme_bw() + theme(
+GGWBCMAX<- ggplot(data=data4, mapping=aes(x=WhiteBloodCell_max_value)) + geom_histogram(color ='azure4', fill = 'royalblue', bins = 45, na.rm = TRUE) + ggtitle("WhiteBloodCell_max_value") + labs(x='WBC  count', y='Frequency') + theme_bw() + theme(
     plot.title = element_text(hjust = 0.5),
     text=element_text(size=10,  family="Arial", face ='plain'),
     plot.background = element_blank(),
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank(),
     panel.border = element_blank()) 
-plot(GGRBCMAX)
+plot(GGWBCMAX)
 
 
 
-GGRBCMIN<- ggplot(data=data4, mapping=aes(x=WhiteBloodCell_min_value)) + geom_histogram(color ='azure4', fill = 'royalblue', bins = 45, na.rm = TRUE) + ggtitle("WhiteBloodCell_min_value") + labs(x='WBC count', y='Frequency') + theme_bw() + theme(
+GGWBCMIN<- ggplot(data=data4, mapping=aes(x=WhiteBloodCell_min_value)) + geom_histogram(color ='azure4', fill = 'royalblue', bins = 45, na.rm = TRUE) + ggtitle("WhiteBloodCell_min_value") + labs(x='WBC count', y='Frequency') + theme_bw() + theme(
     plot.title = element_text(hjust = 0.5),
     text=element_text(size=10,  family="Arial", face ='plain'),
     plot.background = element_blank(),
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank(),
     panel.border = element_blank()) 
-plot(GGRBCMIN)
+plot(GGWBCMIN)
 
 ```
 
@@ -579,8 +579,6 @@ cat('\n')
 cat('Observation and Factor Count')
 cat('\n')
 summary(table(data2$patient_age))
-cat('\n')
-#cat('Na count', sum(is.na(births$dad_age)))
 cat('\n')
 
 GGpatient_age <- ggplot(data=df, mapping=aes(patient_age)) + geom_histogram(color = "lightsteelblue", fill ='azure3', bins = 35) +  ggtitle("Patient Age") + labs(x='age', y='Frequency') + theme_bw() + theme(
@@ -883,7 +881,7 @@ summary(data6)
 
 unbalanced classes 
 ```{r}
-data7 <- data6
+data7 <- subset(data4, select = -c(PlateletCount_min_value))
 
 ```
 
